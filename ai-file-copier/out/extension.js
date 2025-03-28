@@ -38,91 +38,140 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
-// Represents a file in the custom view
-class FileItem extends vscode.TreeItem {
+// Represents a node in the tree view (file or folder)
+class TreeNode extends vscode.TreeItem {
     label;
     uri;
-    collapsibleState;
-    constructor(label, uri, collapsibleState) {
-        super(label, collapsibleState);
+    isFolder;
+    constructor(label, uri, isFolder) {
+        super(label, isFolder ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
         this.label = label;
         this.uri = uri;
-        this.collapsibleState = collapsibleState;
-        this.tooltip = this.uri.fsPath;
-        this.checkboxState = vscode.TreeItemCheckboxState.Unchecked; // Default unchecked
-        this.contextValue = 'fileItem';
+        this.isFolder = isFolder;
+        this.resourceUri = uri;
+        this.tooltip = uri.fsPath;
+        this.checkboxState = vscode.TreeItemCheckboxState.Unchecked;
+        this.contextValue = isFolder ? 'folder' : 'file';
     }
 }
-// Manages the tree view and file list
+// Manages the tree view and selected files
 class FileSelectorProvider {
     _onDidChangeTreeData = new vscode.EventEmitter();
     onDidChangeTreeData = this._onDidChangeTreeData.event;
-    files = [];
-    constructor() {
-        this.refresh();
-    }
+    selectedFiles = new Set();
+    constructor() { }
     refresh() {
-        this.files = this.getWorkspaceFiles();
+        this.selectedFiles.clear();
         this._onDidChangeTreeData.fire();
     }
     getTreeItem(element) {
         return element;
     }
     getChildren(element) {
-        if (element) {
-            return Promise.resolve([]); // No nested items
+        if (!element) {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (!workspaceFolders) {
+                return Promise.resolve([]);
+            }
+            const rootPath = workspaceFolders[0].uri.fsPath;
+            return Promise.resolve(this.getFolderContents(rootPath));
         }
-        return Promise.resolve(this.files);
+        else if (element.isFolder) {
+            return Promise.resolve(this.getFolderContents(element.uri.fsPath));
+        }
+        return Promise.resolve([]);
     }
-    getWorkspaceFiles() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
-            return [];
+    getFolderContents(dir) {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        const nodes = [];
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            const uri = vscode.Uri.file(fullPath);
+            if (entry.isDirectory()) {
+                nodes.push(new TreeNode(entry.name, uri, true));
+            }
+            else if (entry.isFile()) {
+                nodes.push(new TreeNode(entry.name, uri, false));
+            }
         }
+        return nodes;
+    }
+    getAllFilesInFolder(dir) {
         const files = [];
-        const rootPath = workspaceFolders[0].uri.fsPath;
-        const readDir = (dir) => {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
+        const readDirRecursive = (currentDir) => {
+            const entries = fs.readdirSync(currentDir, { withFileTypes: true });
             for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name);
+                const fullPath = path.join(currentDir, entry.name);
                 if (entry.isFile()) {
-                    files.push(new FileItem(entry.name, vscode.Uri.file(fullPath), vscode.TreeItemCollapsibleState.None));
+                    files.push(fullPath);
                 }
                 else if (entry.isDirectory()) {
-                    readDir(fullPath); // Recursively read subdirectories
+                    readDirRecursive(fullPath);
                 }
             }
         };
-        readDir(rootPath);
+        readDirRecursive(dir);
         return files;
     }
+    updateSelectedFiles(item, state) {
+        if (item.isFolder) {
+            const filesInFolder = this.getAllFilesInFolder(item.uri.fsPath);
+            if (state === vscode.TreeItemCheckboxState.Checked) {
+                filesInFolder.forEach(filePath => this.selectedFiles.add(filePath));
+            }
+            else {
+                filesInFolder.forEach(filePath => this.selectedFiles.delete(filePath));
+            }
+        }
+        else {
+            if (state === vscode.TreeItemCheckboxState.Checked) {
+                this.selectedFiles.add(item.uri.fsPath);
+            }
+            else {
+                this.selectedFiles.delete(item.uri.fsPath);
+            }
+        }
+    }
     getSelectedFiles() {
-        return this.files.filter(file => file.checkboxState === vscode.TreeItemCheckboxState.Checked);
+        return this.selectedFiles;
     }
 }
 // Main activation function
 function activate(context) {
     const fileSelectorProvider = new FileSelectorProvider();
-    vscode.window.registerTreeDataProvider('aiFileSelector', fileSelectorProvider);
+    // Create the tree view with checkboxes and collapse all option
+    const treeView = vscode.window.createTreeView('aiFileSelector', {
+        treeDataProvider: fileSelectorProvider,
+        showCollapseAll: true
+    });
+    // Handle checkbox state changes
+    treeView.onDidChangeCheckboxState(event => {
+        for (const [item, state] of event.items) {
+            fileSelectorProvider.updateSelectedFiles(item, state);
+        }
+    });
+    // Register the copy command
     const copyCommand = vscode.commands.registerCommand('aiFileCopier.copySelectedFiles', async () => {
         const selectedFiles = fileSelectorProvider.getSelectedFiles();
-        if (selectedFiles.length === 0) {
+        if (selectedFiles.size === 0) {
             vscode.window.showInformationMessage('No files selected to copy.');
             return;
         }
+        const workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
         const fileContents = [];
-        for (const file of selectedFiles) {
+        for (const filePath of selectedFiles) {
             try {
-                const content = fs.readFileSync(file.uri.fsPath, 'utf8');
-                fileContents.push(`${file.label}:\n${content}\n`);
+                const content = fs.readFileSync(filePath, 'utf8');
+                const relativePath = path.relative(workspaceRoot, filePath);
+                fileContents.push(`${relativePath}:\n${content}\n`);
             }
             catch (err) {
-                vscode.window.showErrorMessage(`Failed to read ${file.label}: ${err}`);
+                vscode.window.showErrorMessage(`Failed to read ${filePath}: ${err}`);
             }
         }
         const finalText = fileContents.join('\n---\n');
         await vscode.env.clipboard.writeText(finalText);
-        vscode.window.showInformationMessage(`${selectedFiles.length} file(s) copied to clipboard!`);
+        vscode.window.showInformationMessage(`${selectedFiles.size} file(s) copied to clipboard!`);
     });
     context.subscriptions.push(copyCommand);
     context.subscriptions.push(vscode.commands.registerCommand('aiFileSelector.refresh', () => fileSelectorProvider.refresh()));
