@@ -169,7 +169,9 @@ function activate(context) {
                 vscode.window.showErrorMessage(`Failed to read ${filePath}: ${err}`);
             }
         }
-        const finalText = fileContents.join('\n---\n');
+        // Define the new separator
+        const SEPARATOR = '\n-------------------\n-------------------\n';
+        const finalText = fileContents.join(SEPARATOR);
         await vscode.env.clipboard.writeText(finalText);
         vscode.window.showInformationMessage(`${selectedFiles.size} file(s) copied to clipboard!`);
     });

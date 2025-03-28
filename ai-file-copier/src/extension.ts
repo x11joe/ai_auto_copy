@@ -106,6 +106,53 @@ class FileSelectorProvider implements vscode.TreeDataProvider<TreeNode> {
     }
 }
 
+// Helper function to get all ancestor directories of selected files
+function getAncestorDirs(filePaths: Set<string>, workspaceRoot: string): Set<string> {
+    const ancestors = new Set<string>();
+    for (const filePath of filePaths) {
+        let current = path.dirname(filePath);
+        while (current.startsWith(workspaceRoot)) {
+            ancestors.add(current);
+            if (current === workspaceRoot) break;
+            current = path.dirname(current);
+        }
+    }
+    return ancestors;
+}
+
+// Helper function to build the directory structure string
+function buildTreeString(currentDir: string, ancestorDirs: Set<string>, selectedFiles: Set<string>, prefix: string = '', isLast: boolean = true): string {
+    let result = '';
+    // Only process directories that are ancestors of selected files
+    if (!ancestorDirs.has(currentDir)) {
+        return result;
+    }
+
+    const children = fs.readdirSync(currentDir, { withFileTypes: true });
+    children.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        const isLastChild = i === children.length - 1;
+        const childPath = path.join(currentDir, child.name);
+        const childPrefix = prefix + (isLast ? '    ' : '│   ');
+        
+        if (child.isDirectory()) {
+            const displayName = `📁 ${child.name}/`;
+            result += prefix + (isLastChild ? '└── ' : '├── ') + displayName + '\n';
+            // Only recurse if this directory is an ancestor (contains selected files or leads to them)
+            if (ancestorDirs.has(childPath)) {
+                result += buildTreeString(childPath, ancestorDirs, selectedFiles, childPrefix, isLastChild);
+            }
+        } else if (child.isFile()) {
+            const isSelected = selectedFiles.has(childPath);
+            const displayName = `📄 ${child.name}${isSelected ? ' *' : ''}`;
+            result += prefix + (isLastChild ? '└── ' : '├── ') + displayName + '\n';
+        }
+    }
+    return result;
+}
+
 // Main activation function
 export function activate(context: vscode.ExtensionContext) {
     const fileSelectorProvider = new FileSelectorProvider();
@@ -132,6 +179,15 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         const workspaceRoot = vscode.workspace.workspaceFolders![0].uri.fsPath;
+
+        // Compute ancestor directories for selected files
+        const ancestorDirs = getAncestorDirs(selectedFiles, workspaceRoot);
+
+        // Build the directory structure tree string
+        const treeString = buildTreeString(workspaceRoot, ancestorDirs, selectedFiles);
+        const directoryStructure = `Directory Structure:\n${treeString}\n`;
+
+        // Collect file contents
         const fileContents: string[] = [];
         for (const filePath of selectedFiles) {
             try {
@@ -143,9 +199,14 @@ export function activate(context: vscode.ExtensionContext) {
             }
         }
 
-        // Define the new separator
+        // Define the separator
         const SEPARATOR = '\n-------------------\n-------------------\n';
-        const finalText = fileContents.join(SEPARATOR);
+
+        // Combine directory structure and file contents
+        const fileContentsText = fileContents.join(SEPARATOR);
+        const finalText = directoryStructure + 'File Contents:\n' + fileContentsText;
+
+        // Copy to clipboard
         await vscode.env.clipboard.writeText(finalText);
         vscode.window.showInformationMessage(`${selectedFiles.size} file(s) copied to clipboard!`);
     });
