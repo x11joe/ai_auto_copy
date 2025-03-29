@@ -136,6 +136,48 @@ class FileSelectorProvider {
         return this.selectedFiles;
     }
 }
+// Helper function to get all ancestor directories of selected files
+function getAncestorDirs(filePaths, workspaceRoot) {
+    const ancestors = new Set();
+    for (const filePath of filePaths) {
+        let current = path.dirname(filePath);
+        while (current.startsWith(workspaceRoot)) {
+            ancestors.add(current);
+            if (current === workspaceRoot)
+                break;
+            current = path.dirname(current);
+        }
+    }
+    return ancestors;
+}
+// Helper function to build the directory structure string
+function buildTreeString(currentDir, ancestorDirs, selectedFiles, prefix = '', isLast = true) {
+    let result = '';
+    if (!ancestorDirs.has(currentDir)) {
+        return result;
+    }
+    const children = fs.readdirSync(currentDir, { withFileTypes: true });
+    children.sort((a, b) => a.name.localeCompare(b.name));
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        const isLastChild = i === children.length - 1;
+        const childPath = path.join(currentDir, child.name);
+        const childPrefix = prefix + (isLast ? '    ' : '│   ');
+        if (child.isDirectory()) {
+            const displayName = `📁 ${child.name}/`;
+            result += prefix + (isLastChild ? '└── ' : '├── ') + displayName + '\n';
+            if (ancestorDirs.has(childPath)) {
+                result += buildTreeString(childPath, ancestorDirs, selectedFiles, childPrefix, isLastChild);
+            }
+        }
+        else if (child.isFile()) {
+            const isSelected = selectedFiles.has(childPath);
+            const displayName = `📄 ${child.name}${isSelected ? ' *' : ''}`;
+            result += prefix + (isLastChild ? '└── ' : '├── ') + displayName + '\n';
+        }
+    }
+    return result;
+}
 // Main activation function
 function activate(context) {
     const fileSelectorProvider = new FileSelectorProvider();
@@ -150,6 +192,12 @@ function activate(context) {
             fileSelectorProvider.updateSelectedFiles(item, state);
         }
     });
+    // Refresh the tree view when it becomes visible
+    context.subscriptions.push(treeView.onDidChangeVisibility(() => {
+        if (treeView.visible) {
+            fileSelectorProvider.refresh();
+        }
+    }));
     // Register the copy command
     const copyCommand = vscode.commands.registerCommand('aiFileCopier.copySelectedFiles', async () => {
         const selectedFiles = fileSelectorProvider.getSelectedFiles();
@@ -158,6 +206,12 @@ function activate(context) {
             return;
         }
         const workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+        // Compute ancestor directories for selected files
+        const ancestorDirs = getAncestorDirs(selectedFiles, workspaceRoot);
+        // Build the directory structure tree string
+        const treeString = buildTreeString(workspaceRoot, ancestorDirs, selectedFiles);
+        const directoryStructure = `Directory Structure:\n${treeString}\n`;
+        // Collect file contents
         const fileContents = [];
         for (const filePath of selectedFiles) {
             try {
@@ -169,9 +223,12 @@ function activate(context) {
                 vscode.window.showErrorMessage(`Failed to read ${filePath}: ${err}`);
             }
         }
-        // Define the new separator
+        // Define the separator
         const SEPARATOR = '\n-------------------\n-------------------\n';
-        const finalText = fileContents.join(SEPARATOR);
+        // Combine directory structure and file contents
+        const fileContentsText = fileContents.join(SEPARATOR);
+        const finalText = directoryStructure + 'File Contents:\n' + fileContentsText;
+        // Copy to clipboard
         await vscode.env.clipboard.writeText(finalText);
         vscode.window.showInformationMessage(`${selectedFiles.size} file(s) copied to clipboard!`);
     });

@@ -123,7 +123,6 @@ function getAncestorDirs(filePaths: Set<string>, workspaceRoot: string): Set<str
 // Helper function to build the directory structure string
 function buildTreeString(currentDir: string, ancestorDirs: Set<string>, selectedFiles: Set<string>, prefix: string = '', isLast: boolean = true): string {
     let result = '';
-    // Only process directories that are ancestors of selected files
     if (!ancestorDirs.has(currentDir)) {
         return result;
     }
@@ -140,7 +139,6 @@ function buildTreeString(currentDir: string, ancestorDirs: Set<string>, selected
         if (child.isDirectory()) {
             const displayName = `📁 ${child.name}/`;
             result += prefix + (isLastChild ? '└── ' : '├── ') + displayName + '\n';
-            // Only recurse if this directory is an ancestor (contains selected files or leads to them)
             if (ancestorDirs.has(childPath)) {
                 result += buildTreeString(childPath, ancestorDirs, selectedFiles, childPrefix, isLastChild);
             }
@@ -169,6 +167,15 @@ export function activate(context: vscode.ExtensionContext) {
             fileSelectorProvider.updateSelectedFiles(item, state);
         }
     });
+
+    // Refresh the tree view when it becomes visible
+    context.subscriptions.push(
+        treeView.onDidChangeVisibility(() => {
+            if (treeView.visible) {
+                fileSelectorProvider.refresh();
+            }
+        })
+    );
 
     // Register the copy command
     const copyCommand = vscode.commands.registerCommand('aiFileCopier.copySelectedFiles', async () => {
