@@ -61,7 +61,6 @@ class FileSelectorProvider {
     selectedFiles = new Set();
     constructor() { }
     refresh() {
-        this.selectedFiles.clear();
         this._onDidChangeTreeData.fire();
     }
     getTreeItem(element) {
@@ -88,10 +87,16 @@ class FileSelectorProvider {
             const fullPath = path.join(dir, entry.name);
             const uri = vscode.Uri.file(fullPath);
             if (entry.isDirectory()) {
-                nodes.push(new TreeNode(entry.name, uri, true));
+                const node = new TreeNode(entry.name, uri, true);
+                const filesInFolder = this.getAllFilesInFolder(fullPath);
+                const allSelected = filesInFolder.length > 0 && filesInFolder.every(file => this.selectedFiles.has(file));
+                node.checkboxState = allSelected ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
+                nodes.push(node);
             }
             else if (entry.isFile()) {
-                nodes.push(new TreeNode(entry.name, uri, false));
+                const node = new TreeNode(entry.name, uri, false);
+                node.checkboxState = this.selectedFiles.has(fullPath) ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
+                nodes.push(node);
             }
         }
         return nodes;
