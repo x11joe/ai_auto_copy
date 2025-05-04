@@ -20,6 +20,15 @@
         }
       ]
     },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "aiFileCopier.removePreset",
+          "when": "view == aiFileSelector && viewItem == loadPreset",
+          "group": "navigation"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "aiFileCopier.copySelectedFiles",
@@ -36,6 +45,10 @@
       {
         "command": "aiFileSelector.refresh",
         "title": "Refresh AI File Selector"
+      },
+      {
+        "command": "aiFileCopier.removePreset",
+        "title": "Remove Preset"
       }
     ],
     "keybindings": [

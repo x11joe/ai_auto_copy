@@ -1,5 +1,5 @@
-//extension.ts
-//npm run compile  <-- Remember to run AFTER making changes to this file
+// extension.ts
+// Remember to always 'run npm run compile' after any changes to this file so that the changes are reflected in the compiled JavaScript file.
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -19,7 +19,19 @@ class TreeNode extends vscode.TreeItem {
         this.resourceUri = uri;
         this.tooltip = uri.fsPath;
         this.checkboxState = isFolder || !command ? vscode.TreeItemCheckboxState.Unchecked : undefined;
-        this.contextValue = isFolder ? 'folder' : (command ? 'presetAction' : 'file');
+        if (isFolder) {
+            this.contextValue = 'folder';
+        } else if (command) {
+            if (command.command === 'aiFileCopier.loadPreset') {
+                this.contextValue = 'loadPreset';
+            } else if (command.command === 'aiFileCopier.savePreset') {
+                this.contextValue = 'savePreset';
+            } else {
+                this.contextValue = 'presetAction';
+            }
+        } else {
+            this.contextValue = 'file';
+        }
         this.command = command;
     }
 }
@@ -42,6 +54,8 @@ class FileSelectorProvider implements vscode.TreeDataProvider<TreeNode> {
     }
 
     getTreeItem(element: TreeNode): vscode.TreeItem {
+        // Optional debugging: Log the label and contextValue to verify they are set correctly
+        console.log(`getTreeItem: label=${element.label}, contextValue=${element.contextValue}`);
         return element;
     }
 
@@ -220,11 +234,9 @@ function buildTreeString(currentDir: string, ancestorDirs: Set<string>, selected
 
 export function activate(context: vscode.ExtensionContext) {
     try {
-        // Create output channel inside activate
         const outputChannel = vscode.window.createOutputChannel('AI File Copier');
         outputChannel.appendLine('AI File Copier extension activated');
 
-        // Show a notification to confirm activation
         vscode.window.showInformationMessage('AI File Copier extension activated');
 
         const fileSelectorProvider = new FileSelectorProvider(context, outputChannel);
@@ -301,7 +313,27 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
 
-        context.subscriptions.push(copyCommand, savePresetCommand, loadPresetCommand);
+        const removePresetCommand = vscode.commands.registerCommand('aiFileCopier.removePreset', async (node: TreeNode) => {
+            if (node.contextValue === 'loadPreset' && node.command && node.command.arguments && node.command.arguments.length > 0) {
+                const presetName = node.command.arguments[0] as string;
+                const confirmation = await vscode.window.showWarningMessage(`Are you sure you want to remove preset "${presetName}"?`, 'Yes', 'No');
+                if (confirmation === 'Yes') {
+                    const presets = context.workspaceState.get('presets', {}) as Record<string, string[]>;
+                    if (presets[presetName]) {
+                        delete presets[presetName];
+                        await context.workspaceState.update('presets', presets);
+                        fileSelectorProvider.refresh();
+                        vscode.window.showInformationMessage(`Preset "${presetName}" removed.`);
+                    } else {
+                        vscode.window.showWarningMessage(`Preset "${presetName}" not found.`);
+                    }
+                }
+            } else {
+                vscode.window.showErrorMessage('Invalid preset node.');
+            }
+        });
+
+        context.subscriptions.push(copyCommand, savePresetCommand, loadPresetCommand, removePresetCommand);
 
         context.subscriptions.push(
             vscode.commands.registerCommand('aiFileSelector.refresh', () => fileSelectorProvider.refresh())
