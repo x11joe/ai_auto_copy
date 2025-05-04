@@ -24,6 +24,18 @@
       {
         "command": "aiFileCopier.copySelectedFiles",
         "title": "Copy Selected Files for AI"
+      },
+      {
+        "command": "aiFileCopier.savePreset",
+        "title": "Save Selection as Preset"
+      },
+      {
+        "command": "aiFileCopier.loadPreset",
+        "title": "Load Preset"
+      },
+      {
+        "command": "aiFileSelector.refresh",
+        "title": "Refresh AI File Selector"
       }
     ],
     "keybindings": [

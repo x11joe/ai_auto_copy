@@ -38,28 +38,32 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
-// Represents a node in the tree view (file or folder)
 class TreeNode extends vscode.TreeItem {
     label;
     uri;
     isFolder;
-    constructor(label, uri, isFolder) {
-        super(label, isFolder ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+    constructor(label, uri, isFolder, collapsibleState = isFolder ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None, command) {
+        super(label, collapsibleState);
         this.label = label;
         this.uri = uri;
         this.isFolder = isFolder;
         this.resourceUri = uri;
         this.tooltip = uri.fsPath;
-        this.checkboxState = vscode.TreeItemCheckboxState.Unchecked;
-        this.contextValue = isFolder ? 'folder' : 'file';
+        this.checkboxState = isFolder || !command ? vscode.TreeItemCheckboxState.Unchecked : undefined;
+        this.contextValue = isFolder ? 'folder' : (command ? 'presetAction' : 'file');
+        this.command = command;
     }
 }
-// Manages the tree view and selected files
 class FileSelectorProvider {
     _onDidChangeTreeData = new vscode.EventEmitter();
     onDidChangeTreeData = this._onDidChangeTreeData.event;
     selectedFiles = new Set();
-    constructor() { }
+    context;
+    outputChannel;
+    constructor(context, outputChannel) {
+        this.context = context;
+        this.outputChannel = outputChannel;
+    }
     refresh() {
         this._onDidChangeTreeData.fire();
     }
@@ -67,18 +71,48 @@ class FileSelectorProvider {
         return element;
     }
     getChildren(element) {
-        if (!element) {
-            const workspaceFolders = vscode.workspace.workspaceFolders;
-            if (!workspaceFolders) {
-                return Promise.resolve([]);
+        try {
+            if (!element) {
+                const workspaceFolders = vscode.workspace.workspaceFolders;
+                if (!workspaceFolders) {
+                    this.outputChannel.appendLine('No workspace folder open');
+                    vscode.window.showWarningMessage('No workspace folder open. Please open a folder.');
+                    return Promise.resolve([]);
+                }
+                const rootPath = workspaceFolders[0].uri.fsPath;
+                const rootUri = vscode.Uri.file(rootPath);
+                const presetNodes = this.getPresetNodes();
+                const fileNodes = this.getFolderContents(rootPath);
+                this.outputChannel.appendLine(`Root nodes being returned: savePreset='Save Preset', presetNodesCount=${presetNodes.length}, fileNodesCount=${fileNodes.length}`);
+                return Promise.resolve([
+                    new TreeNode('Save Preset', rootUri, false, vscode.TreeItemCollapsibleState.None, {
+                        command: 'aiFileCopier.savePreset',
+                        title: 'Save Preset'
+                    }),
+                    ...presetNodes,
+                    ...fileNodes
+                ]);
             }
-            const rootPath = workspaceFolders[0].uri.fsPath;
-            return Promise.resolve(this.getFolderContents(rootPath));
+            else if (element.isFolder) {
+                return Promise.resolve(this.getFolderContents(element.uri.fsPath));
+            }
+            return Promise.resolve([]);
         }
-        else if (element.isFolder) {
-            return Promise.resolve(this.getFolderContents(element.uri.fsPath));
+        catch (error) {
+            this.outputChannel.appendLine(`Error in getChildren: ${error}`);
+            vscode.window.showErrorMessage(`Tree view error: ${error}`);
+            return Promise.resolve([]);
         }
-        return Promise.resolve([]);
+    }
+    getPresetNodes() {
+        const presetNames = this.getPresetNames();
+        const rootPath = vscode.workspace.workspaceFolders[0].uri.fsPath;
+        const rootUri = vscode.Uri.file(rootPath);
+        return presetNames.map(name => new TreeNode(`Load: ${name}`, rootUri, false, vscode.TreeItemCollapsibleState.None, {
+            command: 'aiFileCopier.loadPreset',
+            title: `Load ${name}`,
+            arguments: [name]
+        }));
     }
     getFolderContents(dir) {
         const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -140,8 +174,28 @@ class FileSelectorProvider {
     getSelectedFiles() {
         return this.selectedFiles;
     }
+    savePreset(name) {
+        const workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+        const relativePaths = Array.from(this.selectedFiles).map(filePath => path.relative(workspaceRoot, filePath));
+        const presets = this.context.workspaceState.get('presets', {});
+        presets[name] = relativePaths;
+        this.context.workspaceState.update('presets', presets);
+        this.refresh();
+    }
+    loadPreset(name) {
+        const workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+        const presets = this.context.workspaceState.get('presets', {});
+        const relativePaths = presets[name] || [];
+        const absolutePaths = relativePaths.map(relPath => path.join(workspaceRoot, relPath)).filter(filePath => fs.existsSync(filePath));
+        this.selectedFiles.clear();
+        absolutePaths.forEach(filePath => this.selectedFiles.add(filePath));
+        this.refresh();
+    }
+    getPresetNames() {
+        const presets = this.context.workspaceState.get('presets', {});
+        return Object.keys(presets);
+    }
 }
-// Helper function to get all ancestor directories of selected files
 function getAncestorDirs(filePaths, workspaceRoot) {
     const ancestors = new Set();
     for (const filePath of filePaths) {
@@ -155,7 +209,6 @@ function getAncestorDirs(filePaths, workspaceRoot) {
     }
     return ancestors;
 }
-// Helper function to build the directory structure string
 function buildTreeString(currentDir, ancestorDirs, selectedFiles, prefix = '', isLast = true) {
     let result = '';
     if (!ancestorDirs.has(currentDir)) {
@@ -183,62 +236,81 @@ function buildTreeString(currentDir, ancestorDirs, selectedFiles, prefix = '', i
     }
     return result;
 }
-// Main activation function
 function activate(context) {
-    const fileSelectorProvider = new FileSelectorProvider();
-    // Create the tree view with checkboxes and collapse all option
-    const treeView = vscode.window.createTreeView('aiFileSelector', {
-        treeDataProvider: fileSelectorProvider,
-        showCollapseAll: true
-    });
-    // Handle checkbox state changes
-    treeView.onDidChangeCheckboxState(event => {
-        for (const [item, state] of event.items) {
-            fileSelectorProvider.updateSelectedFiles(item, state);
-        }
-    });
-    // Refresh the tree view when it becomes visible
-    context.subscriptions.push(treeView.onDidChangeVisibility(() => {
-        if (treeView.visible) {
-            fileSelectorProvider.refresh();
-        }
-    }));
-    // Register the copy command
-    const copyCommand = vscode.commands.registerCommand('aiFileCopier.copySelectedFiles', async () => {
-        const selectedFiles = fileSelectorProvider.getSelectedFiles();
-        if (selectedFiles.size === 0) {
-            vscode.window.showInformationMessage('No files selected to copy.');
-            return;
-        }
-        const workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
-        // Compute ancestor directories for selected files
-        const ancestorDirs = getAncestorDirs(selectedFiles, workspaceRoot);
-        // Build the directory structure tree string
-        const treeString = buildTreeString(workspaceRoot, ancestorDirs, selectedFiles);
-        const directoryStructure = `Directory Structure:\n${treeString}\n`;
-        // Collect file contents
-        const fileContents = [];
-        for (const filePath of selectedFiles) {
-            try {
-                const content = fs.readFileSync(filePath, 'utf8');
-                const relativePath = path.relative(workspaceRoot, filePath);
-                fileContents.push(`${relativePath}:\n${content}\n`);
+    try {
+        // Create output channel inside activate
+        const outputChannel = vscode.window.createOutputChannel('AI File Copier');
+        outputChannel.appendLine('AI File Copier extension activated');
+        // Show a notification to confirm activation
+        vscode.window.showInformationMessage('AI File Copier extension activated');
+        const fileSelectorProvider = new FileSelectorProvider(context, outputChannel);
+        const treeView = vscode.window.createTreeView('aiFileSelector', {
+            treeDataProvider: fileSelectorProvider,
+            showCollapseAll: true
+        });
+        treeView.onDidChangeCheckboxState(event => {
+            for (const [item, state] of event.items) {
+                fileSelectorProvider.updateSelectedFiles(item, state);
             }
-            catch (err) {
-                vscode.window.showErrorMessage(`Failed to read ${filePath}: ${err}`);
+        });
+        context.subscriptions.push(treeView.onDidChangeVisibility(() => {
+            if (treeView.visible) {
+                fileSelectorProvider.refresh();
             }
-        }
-        // Define the separator
-        const SEPARATOR = '\n-------------------\n-------------------\n';
-        // Combine directory structure and file contents
-        const fileContentsText = fileContents.join(SEPARATOR);
-        const finalText = directoryStructure + 'File Contents:\n' + fileContentsText;
-        // Copy to clipboard
-        await vscode.env.clipboard.writeText(finalText);
-        vscode.window.showInformationMessage(`${selectedFiles.size} file(s) copied to clipboard!`);
-    });
-    context.subscriptions.push(copyCommand);
-    context.subscriptions.push(vscode.commands.registerCommand('aiFileSelector.refresh', () => fileSelectorProvider.refresh()));
+        }));
+        const copyCommand = vscode.commands.registerCommand('aiFileCopier.copySelectedFiles', async () => {
+            const selectedFiles = fileSelectorProvider.getSelectedFiles();
+            if (selectedFiles.size === 0) {
+                vscode.window.showInformationMessage('No files selected to copy.');
+                return;
+            }
+            const existingSelectedFiles = Array.from(selectedFiles).filter(filePath => fs.existsSync(filePath));
+            if (existingSelectedFiles.length === 0) {
+                vscode.window.showInformationMessage('No existing files selected to copy.');
+                return;
+            }
+            const workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+            const ancestorDirs = getAncestorDirs(new Set(existingSelectedFiles), workspaceRoot);
+            const treeString = buildTreeString(workspaceRoot, ancestorDirs, new Set(existingSelectedFiles));
+            const directoryStructure = `Directory Structure:\n${treeString}\n`;
+            const fileContents = [];
+            for (const filePath of existingSelectedFiles) {
+                try {
+                    const content = fs.readFileSync(filePath, 'utf8');
+                    const relativePath = path.relative(workspaceRoot, filePath);
+                    fileContents.push(`${relativePath}:\n${content}\n`);
+                }
+                catch (err) {
+                    vscode.window.showErrorMessage(`Failed to read ${filePath}: ${err}`);
+                }
+            }
+            const SEPARATOR = '\n-------------------\n-------------------\n';
+            const fileContentsText = fileContents.join(SEPARATOR);
+            const finalText = directoryStructure + 'File Contents:\n' + fileContentsText;
+            await vscode.env.clipboard.writeText(finalText);
+            vscode.window.showInformationMessage(`${existingSelectedFiles.length} file(s) copied to clipboard!`);
+        });
+        const savePresetCommand = vscode.commands.registerCommand('aiFileCopier.savePreset', async () => {
+            const name = await vscode.window.showInputBox({ prompt: 'Enter a name for the preset' });
+            if (name) {
+                fileSelectorProvider.savePreset(name);
+                vscode.window.showInformationMessage(`Preset "${name}" saved.`);
+            }
+        });
+        const loadPresetCommand = vscode.commands.registerCommand('aiFileCopier.loadPreset', async (presetName) => {
+            const name = presetName || await vscode.window.showQuickPick(fileSelectorProvider.getPresetNames(), { placeHolder: 'Select a preset to load' });
+            if (name) {
+                fileSelectorProvider.loadPreset(name);
+                vscode.window.showInformationMessage(`Preset "${name}" loaded.`);
+            }
+        });
+        context.subscriptions.push(copyCommand, savePresetCommand, loadPresetCommand);
+        context.subscriptions.push(vscode.commands.registerCommand('aiFileSelector.refresh', () => fileSelectorProvider.refresh()));
+    }
+    catch (error) {
+        console.error('Error activating AI File Copier extension:', error);
+        vscode.window.showErrorMessage(`Failed to activate AI File Copier: ${error}`);
+    }
 }
 function deactivate() { }
 //# sourceMappingURL=extension.js.map
